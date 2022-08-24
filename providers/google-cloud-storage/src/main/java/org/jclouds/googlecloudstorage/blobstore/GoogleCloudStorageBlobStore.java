@@ -20,6 +20,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.io.BaseEncoding.base64;
 import static org.jclouds.googlecloudstorage.domain.DomainResourceReferences.ObjectRole.READER;
 
+import com.google.common.collect.Lists;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -81,6 +82,7 @@ import com.google.common.hash.HashCode;
 
 public final class GoogleCloudStorageBlobStore extends BaseBlobStore {
 
+   public static final int MAX_COMPOSE_OBJECTS_PER_API_CALL = 32;
    private final GoogleCloudStorageApi api;
    private final BucketToStorageMetadata bucketToStorageMetadata;
    private final ObjectToBlobMetadata objectToBlobMetadata;
@@ -399,11 +401,16 @@ public final class GoogleCloudStorageBlobStore extends BaseBlobStore {
          destination.addAcl(controls);
       }
 
-      ComposeObjectTemplate template = ComposeObjectTemplate.builder()
-            .fromGoogleCloudStorageObject(objects)
-            .destination(destination).build();
-      String eTag = api.getObjectApi().composeObjects(mpu.containerName(), Strings2.urlEncode(mpu.blobName()), template)
-            .etag();
+      String eTag = null;
+      if (objects.size() > MAX_COMPOSE_OBJECTS_PER_API_CALL) {
+         List<List<GoogleCloudStorageObject>> partitionedObjects = Lists.partition(objects,
+                 MAX_COMPOSE_OBJECTS_PER_API_CALL);
+         for (List<GoogleCloudStorageObject> objectsForApiCall : partitionedObjects) {
+            eTag = composeObjects(mpu, destination, objectsForApiCall);
+         }
+      } else {
+         eTag = composeObjects(mpu, destination, objects);
+      }
 
       // remove parts, composite object keeps a reference to them
       ImmutableList.Builder<String> builder = ImmutableList.builder();
@@ -413,6 +420,15 @@ public final class GoogleCloudStorageBlobStore extends BaseBlobStore {
       removeBlobs(mpu.containerName(), builder.build());
 
       return eTag;
+   }
+
+   private String composeObjects(MultipartUpload mpu, ObjectTemplate destination,
+                            List<GoogleCloudStorageObject> objects) {
+      ComposeObjectTemplate template = ComposeObjectTemplate.builder()
+              .fromGoogleCloudStorageObject(objects)
+              .destination(destination).build();
+      return api.getObjectApi().composeObjects(mpu.containerName(), Strings2.urlEncode(mpu.blobName()), template)
+              .etag();
    }
 
    @Override
